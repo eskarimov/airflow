@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-"""This module contains helper functions for Google CLoud operators."""
+"""This module contains helper functions for Google Cloud operators."""
 from typing import Optional
 
 
