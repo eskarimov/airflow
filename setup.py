@@ -244,6 +244,8 @@ dask = [
 ]
 databricks = [
     'requests>=2.26.0, <3',
+    'aiohttp>=3.6.3, <4',
+    'asynctest~=0.13',
 ]
 datadog = [
     'datadog>=0.14.0',
