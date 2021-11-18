@@ -661,7 +661,7 @@ class DatabricksAsyncHook(DatabricksHook):
         Retrieves run_page_url.
 
         :param run_id: id of the run
-        :type run_id: str
+        :type run_id: int
         :return: URL of the run page
         :rtype: str
         """
@@ -674,7 +674,7 @@ class DatabricksAsyncHook(DatabricksHook):
         Retrieves run state of the run.
 
         :param run_id: id of the run
-        :type run_id: str
+        :type run_id: int
         :rtype: RunState
         """
         json = {'run_id': run_id}
