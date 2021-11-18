@@ -244,6 +244,7 @@ dask = [
 ]
 databricks = [
     'requests>=2.26.0, <3',
+    'aiohttp>=3.6.3, <4',
 ]
 datadog = [
     'datadog>=0.14.0',
@@ -541,6 +542,7 @@ mypy_dependencies = [
 
 # Dependencies needed for development only
 devel_only = [
+    'asynctest~=0.13',
     'aws_xray_sdk',
     'beautifulsoup4~=4.7.1',
     'black',
