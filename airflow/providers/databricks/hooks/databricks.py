@@ -22,12 +22,15 @@ This hook enable the submitting and running of jobs to the Databricks platform. 
 operators talk to the ``api/2.0/jobs/runs/submit``
 `endpoint <https://docs.databricks.com/api/latest/jobs.html#runs-submit>`_.
 """
+import asyncio
+import json
 import sys
 import time
 from time import sleep
-from typing import Dict
+from typing import Any, Dict, Tuple
 from urllib.parse import urlparse
 
+import aiohttp
 import requests
 from requests import PreparedRequest, exceptions as requests_exceptions
 from requests.auth import AuthBase
@@ -110,6 +113,13 @@ class RunState:
 
     def __repr__(self) -> str:
         return str(self.__dict__)
+
+    def to_json(self) -> str:
+        return json.dumps(self.__dict__)
+
+    @classmethod
+    def from_json(cls, data: str) -> 'RunState':
+        return RunState(**json.loads(data))
 
 
 class DatabricksHook(BaseHook):
@@ -568,3 +578,117 @@ class _TokenAuth(AuthBase):
     def __call__(self, r: PreparedRequest) -> PreparedRequest:
         r.headers['Authorization'] = 'Bearer ' + self.token
         return r
+
+
+class DatabricksAsyncHook(DatabricksHook):
+    """
+    Async version of the ``DatabricksHook``
+    Implements only necessary methods used further in Databricks Triggers.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+
+    async def __aenter__(self):
+        self._session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, *err):
+        await self._session.close()
+        self._session = None
+
+    async def _do_api_call(self, endpoint_info: Tuple[str, str], json: dict) -> dict:
+        """
+        Utility function to perform an async API call with retries
+
+        :param endpoint_info: Tuple of method and endpoint
+        :type endpoint_info: tuple[string, string]
+        :param json: Parameters for this API call.
+        :type json: dict
+        :return: If the api call returns a OK status code,
+            this function returns the response in JSON. Otherwise, throw an AirflowException.
+        :rtype: dict
+        """
+        method, endpoint = endpoint_info
+        auth = None
+        headers = {}
+        if 'token' in self.databricks_conn.extra_dejson:
+            self.log.info('Using token auth.')
+            headers["Authorization"] = f'Bearer {self.databricks_conn.extra_dejson["token"]}'
+            if 'host' in self.databricks_conn.extra_dejson:
+                host = self._parse_host(self.databricks_conn.extra_dejson['host'])
+            else:
+                host = self.databricks_conn.host
+        else:
+            self.log.info('Using basic auth.')
+            auth = aiohttp.BasicAuth(self.databricks_conn.login, self.databricks_conn.password)
+            host = self.databricks_conn.host
+
+        url = f'https://{self._parse_host(host)}/{endpoint}'
+
+        if method == 'GET':
+            request_func = self._session.get
+        elif method == 'POST':
+            request_func = self._session.post
+        elif method == 'PATCH':
+            request_func = self._session.patch
+        else:
+            raise AirflowException('Unexpected HTTP Method: ' + method)
+
+        attempt_num = 1
+        while True:
+            try:
+                async with request_func(
+                    url,
+                    json=json,
+                    auth=auth,
+                    headers={**headers, **USER_AGENT_HEADER},
+                    timeout=self.timeout_seconds,
+                ) as response:
+                    response.raise_for_status()
+                    return await response.json()
+            except aiohttp.ClientResponseError as err:
+                if err.status < 500:
+                    # In this case, a user probably made a mistake.
+                    # Don't retry.
+                    # pylint: disable=raise-missing-from
+                    raise AirflowException(f'Response: {err.message}, Status Code: {err.status}')
+
+                self._log_request_error(attempt_num, f'Response: {err.message}, Status Code: {err.status}')
+
+            if attempt_num == self.retry_limit:
+                raise AirflowException(
+                    f'API requests to Databricks failed {self.retry_limit} times. Giving up.'
+                )
+
+            attempt_num += 1
+            await asyncio.sleep(self.retry_delay)
+
+    async def get_run_page_url(self, run_id: int) -> str:
+        """
+        Retrieves run_page_url.
+
+        :param run_id: id of the run
+        :type run_id: str
+        :return: URL of the run page
+        :rtype: str
+        """
+        json = {'run_id': run_id}
+        response = await self._do_api_call(GET_RUN_ENDPOINT, json)
+        return response['run_page_url']
+
+    async def get_run_state(self, run_id: int) -> RunState:
+        """
+        Retrieves run state of the run.
+
+        :param run_id: id of the run
+        :type run_id: str
+        :rtype: RunState
+        """
+        json = {'run_id': run_id}
+        response = await self._do_api_call(GET_RUN_ENDPOINT, json)
+        state = response['state']
+        life_cycle_state = state['life_cycle_state']
+        result_state = state.get('result_state', None)
+        state_message = state['state_message']
+        return RunState(life_cycle_state, result_state, state_message)
