@@ -19,9 +19,10 @@
 
 import itertools
 import json
+import sys
 import unittest
-from unittest import mock
 
+import aiohttp
 import pytest
 from requests import exceptions as requests_exceptions
 
@@ -31,11 +32,20 @@ from airflow.models import Connection
 from airflow.providers.databricks.hooks.databricks import (
     AZURE_MANAGEMENT_ENDPOINT,
     DEFAULT_DATABRICKS_SCOPE,
+    GET_RUN_ENDPOINT,
     SUBMIT_RUN_ENDPOINT,
+    DatabricksAsyncHook,
     DatabricksHook,
     RunState,
 )
 from airflow.utils.session import provide_session
+
+if sys.version_info < (3, 8):
+    from asynctest import mock
+    from asynctest.mock import CoroutineMock as AsyncMock
+else:
+    from unittest import mock
+    from unittest.mock import AsyncMock
 
 TASK_ID = 'databricks-operator'
 DEFAULT_CONN_ID = 'databricks_default'
@@ -134,6 +144,7 @@ def uninstall_endpoint(host):
 def create_valid_response_mock(content):
     response = mock.MagicMock()
     response.json.return_value = content
+    response.__aenter__.return_value.json = AsyncMock(return_value=content)
     return response
 
 
@@ -588,6 +599,18 @@ class TestRunState(unittest.TestCase):
         run_state = RunState('TERMINATED', 'SUCCESS', '')
         assert run_state.is_successful
 
+    def test_to_json(self):
+        run_state = RunState('TERMINATED', 'SUCCESS', '')
+        expected = json.dumps(
+            {'life_cycle_state': 'TERMINATED', 'result_state': 'SUCCESS', 'state_message': ''}
+        )
+        assert expected == run_state.to_json()
+
+    def test_from_json(self):
+        state = {'life_cycle_state': 'TERMINATED', 'result_state': 'SUCCESS', 'state_message': ''}
+        expected = RunState('TERMINATED', 'SUCCESS', '')
+        assert expected == RunState.from_json(json.dumps(state))
+
 
 def create_aad_token_for_resource(resource: str) -> dict:
     return {
@@ -677,3 +700,128 @@ class TestDatabricksHookAadTokenSpOutside(unittest.TestCase):
         assert kwargs['auth'].token == TOKEN
         assert kwargs['headers']['X-Databricks-Azure-Workspace-Resource-Id'] == '/Some/resource'
         assert kwargs['headers']['X-Databricks-Azure-SP-Management-Token'] == TOKEN
+
+
+class TestDatabricksAsyncHook:
+    """
+    Tests for DatabricksAsyncHook.
+    """
+
+    @provide_session
+    def setup_method(self, method, session=None):
+        conn = session.query(Connection).filter(Connection.conn_id == DEFAULT_CONN_ID).first()
+        conn.host = HOST
+        conn.login = LOGIN
+        conn.password = PASSWORD
+        conn.extra = None
+        session.commit()
+
+        self.hook = DatabricksAsyncHook(retry_delay=0)
+
+    @pytest.mark.asyncio
+    async def test_init_async_session(self):
+        async with self.hook:
+            assert isinstance(self.hook._session, aiohttp.ClientSession)
+        assert self.hook._session is None
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    async def test_do_api_call_retries_with_retryable_error(self, mock_get):
+        mock_get.side_effect = aiohttp.ClientResponseError(None, None, status=500)
+        with mock.patch.object(self.hook.log, 'error') as mock_errors:
+            async with self.hook:
+                with pytest.raises(AirflowException):
+                    await self.hook._do_api_call(GET_RUN_ENDPOINT, {})
+                assert mock_errors.call_count == self.hook.retry_limit
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    async def test_do_api_call_does_not_retry_with_non_retryable_error(self, mock_get):
+        mock_get.side_effect = aiohttp.ClientResponseError(None, None, status=400)
+        with mock.patch.object(self.hook.log, 'error') as mock_errors:
+            async with self.hook:
+                with pytest.raises(AirflowException):
+                    await self.hook._do_api_call(GET_RUN_ENDPOINT, {})
+                mock_errors.assert_not_called()
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    async def test_do_api_call_succeeds_after_retrying(self, mock_get):
+        mock_get.side_effect = [
+            aiohttp.ClientResponseError(None, None, status=500),
+            create_valid_response_mock({'run_id': '1'}),
+        ]
+        with mock.patch.object(self.hook.log, 'error') as mock_errors:
+            async with self.hook:
+                response = await self.hook._do_api_call(GET_RUN_ENDPOINT, {})
+                assert mock_errors.call_count == 1
+                assert response == {'run_id': '1'}
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.asyncio.sleep')
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    async def test_do_api_call_waits_between_retries(self, mock_get, mock_sleep):
+        retry_delay = 5
+        self.hook = DatabricksAsyncHook(retry_delay=retry_delay)
+
+        mock_get.side_effect = aiohttp.ClientResponseError(None, None, status=500)
+        with mock.patch.object(self.hook.log, 'error'):
+            mock_sleep.reset_mock()
+            async with self.hook:
+                with pytest.raises(AirflowException):
+                    await self.hook._do_api_call(GET_RUN_ENDPOINT, {})
+                assert len(mock_sleep.mock_calls) == self.hook.retry_limit - 1
+                calls = [mock.call(retry_delay), mock.call(retry_delay)]
+                mock_sleep.assert_has_calls(calls)
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.patch')
+    async def test_do_api_call_patch(self, mock_patch):
+        mock_patch.return_value.__aenter__.return_value.json = AsyncMock(
+            return_value={'cluster_name': 'new_name'}
+        )
+        data = {'cluster_name': 'new_name'}
+        async with self.hook:
+            patched_cluster_name = await self.hook._do_api_call(('PATCH', 'api/2.1/jobs/runs/submit'), data)
+
+        assert patched_cluster_name['cluster_name'] == 'new_name'
+        mock_patch.assert_called_once_with(
+            submit_run_endpoint(HOST),
+            json={'cluster_name': 'new_name'},
+            auth=aiohttp.BasicAuth(LOGIN, PASSWORD),
+            headers=USER_AGENT_HEADER,
+            timeout=self.hook.timeout_seconds,
+        )
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    async def test_get_run_page_url(self, mock_get):
+        mock_get.return_value.__aenter__.return_value.json = AsyncMock(return_value=GET_RUN_RESPONSE)
+        async with self.hook:
+            run_page_url = await self.hook.get_run_page_url(RUN_ID)
+
+        assert run_page_url == RUN_PAGE_URL
+        mock_get.assert_called_once_with(
+            get_run_endpoint(HOST),
+            json={'run_id': RUN_ID},
+            auth=aiohttp.BasicAuth(LOGIN, PASSWORD),
+            headers=USER_AGENT_HEADER,
+            timeout=self.hook.timeout_seconds,
+        )
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    async def test_get_run_state(self, mock_get):
+        mock_get.return_value.__aenter__.return_value.json = AsyncMock(return_value=GET_RUN_RESPONSE)
+
+        async with self.hook:
+            run_state = await self.hook.get_run_state(RUN_ID)
+
+        assert run_state == RunState(LIFE_CYCLE_STATE, RESULT_STATE, STATE_MESSAGE)
+        mock_get.assert_called_once_with(
+            get_run_endpoint(HOST),
+            json={'run_id': RUN_ID},
+            auth=aiohttp.BasicAuth(LOGIN, PASSWORD),
+            headers=USER_AGENT_HEADER,
+            timeout=self.hook.timeout_seconds,
+        )
