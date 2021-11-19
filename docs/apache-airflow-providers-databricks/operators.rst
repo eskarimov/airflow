@@ -132,3 +132,19 @@ Note that there is exactly one named parameter for each top level parameter in t
      - number of seconds to wait between retries
    * - do_xcom_push: boolean
      - whether we should push run_id and run_page_url to xcom
+
+
+DatabricksSubmitRunDeferrableOperator
+=====================================
+
+Deferrable version of the :class:`~airflow.providers.databricks.operators.DatabricksSubmitRunOperator` operator.
+
+It allows to utilize Airflow workers more effectively using `new functionality introduced in Airflow 2.2.0 <https://airflow.apache.org/docs/apache-airflow/2.2.0/concepts/deferring.html#triggering-deferral>`_
+
+
+DatabricksRunNowDeferrableOperator
+==================================
+
+Deferrable version of the :class:`~airflow.providers.databricks.operators.DatabricksRunNowOperator` operator.
+
+It allows to utilize Airflow workers more effectively using `new functionality introduced in Airflow 2.2.0 <https://airflow.apache.org/docs/apache-airflow/2.2.0/concepts/deferring.html#triggering-deferral>`_
