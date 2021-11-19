@@ -23,8 +23,10 @@ from typing import Any, Dict, List, Optional, Union
 
 from airflow.exceptions import AirflowException
 from airflow.models import BaseOperator
-from airflow.providers.databricks.hooks.databricks import DatabricksHook
+from airflow.providers.databricks.hooks.databricks import DatabricksHook, RunState
+from airflow.providers.databricks.triggers.databricks import DatabricksExecutionTrigger
 
+DEFER_METHOD_NAME = 'execute_complete'
 XCOM_RUN_ID_KEY = 'run_id'
 XCOM_RUN_PAGE_URL_KEY = 'run_page_url'
 
@@ -90,6 +92,50 @@ def _handle_databricks_operator_execution(operator, hook, log, context) -> None:
             log.info('View run status, Spark UI, and logs at %s', run_page_url)
             log.info('Sleeping for %s seconds.', operator.polling_period_seconds)
             time.sleep(operator.polling_period_seconds)
+
+
+def _validate_trigger_event(event: dict):
+    keys_to_check = ['run_id', 'run_page_url', 'run_state']
+    for key in keys_to_check:
+        if not event.get(key):
+            raise AirflowException(f'Could not find `{key}` in the event: {event}')
+
+    try:
+        RunState.from_json(event['run_state'])
+    except Exception:
+        raise AirflowException(f'Run state returned by the Trigger is incorrect: {event["run_state"]}')
+
+
+def _handle_databricks_operator_execution_async(operator, hook, log, context) -> None:
+    if operator.do_xcom_push:
+        context['ti'].xcom_push(key=XCOM_RUN_ID_KEY, value=operator.run_id)
+    log.info(f'Run submitted with run_id: {operator.run_id}')
+    run_page_url = hook.get_run_page_url(operator.run_id)
+    if operator.do_xcom_push:
+        context['ti'].xcom_push(key=XCOM_RUN_PAGE_URL_KEY, value=run_page_url)
+
+    log.info(f'View run status, Spark UI, and logs at {run_page_url}')
+    operator.defer(
+        trigger=DatabricksExecutionTrigger(
+            run_id=operator.run_id,
+            databricks_conn_id=operator.databricks_conn_id,
+            polling_period_seconds=operator.polling_period_seconds,
+        ),
+        method_name=DEFER_METHOD_NAME,
+    )
+
+
+def _handle_databricks_operator_execution_complete(event, log) -> None:
+    run_state = RunState.from_json(event['run_state'])
+    run_page_url = event['run_page_url']
+
+    log.info('View run status, Spark UI, and logs at %s', run_page_url)
+    if run_state.is_successful:
+        log.info('Job run completed successfully.')
+        return
+    else:
+        error_message = f'Job run failed with terminal state: {run_state}'
+        raise AirflowException(error_message)
 
 
 class DatabricksSubmitRunOperator(BaseOperator):
@@ -343,6 +389,20 @@ class DatabricksSubmitRunOperator(BaseOperator):
         self.log.info('Task: %s with run_id: %s was requested to be cancelled.', self.task_id, self.run_id)
 
 
+class DatabricksSubmitRunDeferrableOperator(DatabricksSubmitRunOperator):
+    """Deferrable version of ``DatabricksSubmitRunOperator``"""
+
+    def execute(self, context: Optional[dict]):
+        hook = self._get_hook()
+        self.run_id = hook.submit_run(self.json)
+        _handle_databricks_operator_execution_async(self, hook, self.log, context)
+
+    def execute_complete(self, context: Optional[dict], event: dict):
+        """Handles the logic after a job run completed"""
+        _validate_trigger_event(event)
+        _handle_databricks_operator_execution_complete(event, self.log)
+
+
 class DatabricksRunNowOperator(BaseOperator):
     """
     Runs an existing Spark job run to Databricks using the
@@ -553,3 +613,18 @@ class DatabricksRunNowOperator(BaseOperator):
         hook = self._get_hook()
         hook.cancel_run(self.run_id)
         self.log.info('Task: %s with run_id: %s was requested to be cancelled.', self.task_id, self.run_id)
+
+
+class DatabricksRunNowDeferrableOperator(DatabricksRunNowOperator):
+    """Deferrable version of ``DatabricksRunNowOperator``"""
+
+    def execute(self, context):
+        hook = self._get_hook()
+        self.run_id = hook.run_now(self.json)
+        _handle_databricks_operator_execution_async(self, hook, self.log, context)
+
+    def execute_complete(self, context: Optional[dict], event: dict):
+        """Handles the logic after a job run completed"""
+        _validate_trigger_event(event)
+        _handle_databricks_operator_execution_complete(event,
+        self.log)
