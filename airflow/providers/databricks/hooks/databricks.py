@@ -362,31 +362,31 @@ class DatabricksHook(BaseHook):
     def _log_request_error(self, attempt_num: int, error: str) -> None:
         self.log.error('Attempt %s API Request to Databricks failed with reason: %s', attempt_num, error)
 
-    def run_now(self, json: dict) -> str:
+    def run_now(self, json: dict) -> int:
         """
         Utility function to call the ``api/2.0/jobs/run-now`` endpoint.
 
         :param json: The data used in the body of the request to the ``run-now`` endpoint.
         :type json: dict
         :return: the run_id as a string
-        :rtype: str
+        :rtype: int
         """
         response = self._do_api_call(RUN_NOW_ENDPOINT, json)
         return response['run_id']
 
-    def submit_run(self, json: dict) -> str:
+    def submit_run(self, json: dict) -> int:
         """
         Utility function to call the ``api/2.0/jobs/runs/submit`` endpoint.
 
         :param json: The data used in the body of the request to the ``submit`` endpoint.
         :type json: dict
         :return: the run_id as a string
-        :rtype: str
+        :rtype: int
         """
         response = self._do_api_call(SUBMIT_RUN_ENDPOINT, json)
         return response['run_id']
 
-    def get_run_page_url(self, run_id: str) -> str:
+    def get_run_page_url(self, run_id: int) -> str:
         """
         Retrieves run_page_url.
 
@@ -397,19 +397,19 @@ class DatabricksHook(BaseHook):
         response = self._do_api_call(GET_RUN_ENDPOINT, json)
         return response['run_page_url']
 
-    def get_job_id(self, run_id: str) -> str:
+    def get_job_id(self, run_id: int) -> str:
         """
         Retrieves job_id from run_id.
 
         :param run_id: id of the run
-        :type run_id: str
+        :type run_id: int
         :return: Job id for given Databricks run
         """
         json = {'run_id': run_id}
         response = self._do_api_call(GET_RUN_ENDPOINT, json)
         return response['job_id']
 
-    def get_run_state(self, run_id: str) -> RunState:
+    def get_run_state(self, run_id: int) -> RunState:
         """
         Retrieves run state of the run.
 
@@ -425,7 +425,7 @@ class DatabricksHook(BaseHook):
         state_message = state['state_message']
         return RunState(life_cycle_state, result_state, state_message)
 
-    def cancel_run(self, run_id: str) -> None:
+    def cancel_run(self, run_id: int) -> None:
         """
         Cancels the run.
 
@@ -598,7 +598,7 @@ class DatabricksAsyncHook(DatabricksHook):
         Retrieves run_page_url.
 
         :param run_id: id of the run
-        :type run_id: str
+        :type run_id: int
         :return: URL of the run page
         :rtype: str
         """
@@ -611,7 +611,7 @@ class DatabricksAsyncHook(DatabricksHook):
         Retrieves run state of the run.
 
         :param run_id: id of the run
-        :type run_id: str
+        :type run_id: int
         :rtype: RunState
         """
         json = {'run_id': run_id}
