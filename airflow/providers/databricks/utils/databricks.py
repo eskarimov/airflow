@@ -55,12 +55,13 @@ def deep_string_coerce(content, json_path: str = 'json') -> Union[str, list, dic
 
 
 def validate_trigger_event(event: dict):
-    """Validates correctness of the event received
-    from :class:`~airflow.providers.databricks.triggers.databricks.DatabricksExecutionTrigger
+    """
+    Validates correctness of the event
+    received from :class:`~airflow.providers.databricks.triggers.databricks.DatabricksExecutionTrigger`
     """
     keys_to_check = ['run_id', 'run_page_url', 'run_state']
     for key in keys_to_check:
-        if not event.get(key):
+        if key not in event:
             raise AirflowException(f'Could not find `{key}` in the event: {event}')
 
     try:
