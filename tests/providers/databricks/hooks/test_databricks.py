@@ -39,6 +39,7 @@ from airflow.providers.databricks.hooks.databricks import (
     GET_RUN_ENDPOINT,
     SUBMIT_RUN_ENDPOINT,
     TOKEN_REFRESH_LEAD_TIME,
+    BearerAuth,
     DatabricksAsyncHook,
     DatabricksHook,
     RunState,
@@ -964,3 +965,202 @@ class TestDatabricksAsyncHook:
             headers=USER_AGENT_HEADER,
             timeout=self.hook.timeout_seconds,
         )
+
+
+class TestDatabricksHookAsyncAadToken:
+    """
+    Tests for DatabricksAsyncHook when auth is done with AAD token for SP as user inside workspace.
+    """
+
+    @provide_session
+    def setup_method(self, method, session=None):
+        conn = session.query(Connection).filter(Connection.conn_id == DEFAULT_CONN_ID).first()
+        conn.login = '9ff815a6-4404-4ab8-85cb-cd0e6f879c1d'
+        conn.password = 'secret'
+        conn.extra = json.dumps(
+            {
+                'host': HOST,
+                'azure_tenant_id': '3ff810a6-5504-4ab8-85cb-cd0e6f879c1d',
+            }
+        )
+        session.commit()
+        self.hook = DatabricksAsyncHook()
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.post')
+    async def test_get_run_state(self, mock_post, mock_get):
+        mock_post.return_value.__aenter__.return_value.json = AsyncMock(
+            return_value=create_aad_token_for_resource(DEFAULT_DATABRICKS_SCOPE)
+        )
+        mock_get.return_value.__aenter__.return_value.json = AsyncMock(return_value=GET_RUN_RESPONSE)
+
+        async with self.hook:
+            run_state = await self.hook.get_run_state(RUN_ID)
+
+        assert run_state == RunState(LIFE_CYCLE_STATE, RESULT_STATE, STATE_MESSAGE)
+        mock_get.assert_called_once_with(
+            get_run_endpoint(HOST),
+            json={'run_id': RUN_ID},
+            auth=BearerAuth(TOKEN),
+            headers=USER_AGENT_HEADER,
+            timeout=self.hook.timeout_seconds,
+        )
+
+
+class TestDatabricksAsyncHookAadTokenOtherClouds:
+    """
+    Tests for DatabricksHook when auth is done with AAD token for SP as user inside workspace and
+    using non-global Azure cloud (China, GovCloud, Germany)
+    """
+
+    @provide_session
+    def setup_method(self, method, session=None):
+        self.tenant_id = '3ff810a6-5504-4ab8-85cb-cd0e6f879c1d'
+        self.ad_endpoint = 'https://login.microsoftonline.de'
+        self.client_id = '9ff815a6-4404-4ab8-85cb-cd0e6f879c1d'
+        conn = session.query(Connection).filter(Connection.conn_id == DEFAULT_CONN_ID).first()
+        conn.login = self.client_id
+        conn.password = 'secret'
+        conn.extra = json.dumps(
+            {
+                'host': HOST,
+                'azure_tenant_id': self.tenant_id,
+                'azure_ad_endpoint': self.ad_endpoint,
+            }
+        )
+        session.commit()
+        self.hook = DatabricksAsyncHook()
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.post')
+    async def test_get_run_state(self, mock_post, mock_get):
+        mock_post.return_value.__aenter__.return_value.json = AsyncMock(
+            return_value=create_aad_token_for_resource(DEFAULT_DATABRICKS_SCOPE)
+        )
+        mock_get.return_value.__aenter__.return_value.json = AsyncMock(return_value=GET_RUN_RESPONSE)
+
+        async with self.hook:
+            run_state = await self.hook.get_run_state(RUN_ID)
+
+        assert run_state == RunState(LIFE_CYCLE_STATE, RESULT_STATE, STATE_MESSAGE)
+
+        ad_call_args = mock_post.call_args_list[0]
+        assert ad_call_args[1]['url'] == AZURE_TOKEN_SERVICE_URL.format(self.ad_endpoint, self.tenant_id)
+        assert ad_call_args[1]['data']['client_id'] == self.client_id
+        assert ad_call_args[1]['data']['resource'] == DEFAULT_DATABRICKS_SCOPE
+
+        mock_get.assert_called_once_with(
+            get_run_endpoint(HOST),
+            json={'run_id': RUN_ID},
+            auth=BearerAuth(TOKEN),
+            headers=USER_AGENT_HEADER,
+            timeout=self.hook.timeout_seconds,
+        )
+
+
+class TestDatabricksAsyncHookAadTokenSpOutside:
+    """
+    Tests for DatabricksHook when auth is done with AAD token for SP outside of workspace.
+    """
+
+    @provide_session
+    def setup_method(self, method, session=None):
+        self.tenant_id = '3ff810a6-5504-4ab8-85cb-cd0e6f879c1d'
+        self.client_id = '9ff815a6-4404-4ab8-85cb-cd0e6f879c1d'
+        conn = session.query(Connection).filter(Connection.conn_id == DEFAULT_CONN_ID).first()
+        conn.login = self.client_id
+        conn.password = 'secret'
+        conn.host = HOST
+        conn.extra = json.dumps(
+            {
+                'azure_resource_id': '/Some/resource',
+                'azure_tenant_id': self.tenant_id,
+            }
+        )
+        session.commit()
+        self.hook = DatabricksAsyncHook()
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.post')
+    async def test_get_run_state(self, mock_post, mock_get):
+        mock_post.return_value.__aenter__.return_value.json.side_effect = AsyncMock(
+            side_effect=[
+                create_aad_token_for_resource(AZURE_MANAGEMENT_ENDPOINT),
+                create_aad_token_for_resource(DEFAULT_DATABRICKS_SCOPE),
+            ]
+        )
+        mock_get.return_value.__aenter__.return_value.json = AsyncMock(return_value=GET_RUN_RESPONSE)
+
+        async with self.hook:
+            run_state = await self.hook.get_run_state(RUN_ID)
+
+        assert run_state == RunState(LIFE_CYCLE_STATE, RESULT_STATE, STATE_MESSAGE)
+
+        ad_call_args = mock_post.call_args_list[0]
+        assert ad_call_args[1]['url'] == AZURE_TOKEN_SERVICE_URL.format(
+            AZURE_DEFAULT_AD_ENDPOINT, self.tenant_id
+        )
+        assert ad_call_args[1]['data']['client_id'] == self.client_id
+        assert ad_call_args[1]['data']['resource'] == AZURE_MANAGEMENT_ENDPOINT
+
+        ad_call_args = mock_post.call_args_list[1]
+        assert ad_call_args[1]['url'] == AZURE_TOKEN_SERVICE_URL.format(
+            AZURE_DEFAULT_AD_ENDPOINT, self.tenant_id
+        )
+        assert ad_call_args[1]['data']['client_id'] == self.client_id
+        assert ad_call_args[1]['data']['resource'] == DEFAULT_DATABRICKS_SCOPE
+
+        mock_get.assert_called_once_with(
+            get_run_endpoint(HOST),
+            json={'run_id': RUN_ID},
+            auth=BearerAuth(TOKEN),
+            headers={
+                **USER_AGENT_HEADER,
+                'X-Databricks-Azure-Workspace-Resource-Id': '/Some/resource',
+                'X-Databricks-Azure-SP-Management-Token': TOKEN,
+            },
+            timeout=self.hook.timeout_seconds,
+        )
+
+
+class TestDatabricksHookAsyncAadTokenManagedIdentity:
+    """
+    Tests for DatabricksHook when auth is done with AAD leveraging Managed Identity authentication
+    """
+
+    @provide_session
+    def setup_method(self, method, session=None):
+        conn = session.query(Connection).filter(Connection.conn_id == DEFAULT_CONN_ID).first()
+        conn.host = HOST
+        conn.extra = json.dumps(
+            {
+                'use_azure_managed_identity': True,
+            }
+        )
+        session.commit()
+        session.commit()
+        self.hook = DatabricksAsyncHook()
+
+    @pytest.mark.asyncio
+    @mock.patch('airflow.providers.databricks.hooks.databricks.aiohttp.ClientSession.get')
+    async def test_get_run_state(self, mock_get):
+        mock_get.return_value.__aenter__.return_value.json.side_effect = AsyncMock(
+            side_effect=[
+                {'compute': {'azEnvironment': 'AZUREPUBLICCLOUD'}},
+                create_aad_token_for_resource(DEFAULT_DATABRICKS_SCOPE),
+                GET_RUN_RESPONSE,
+            ]
+        )
+
+        async with self.hook:
+            run_state = await self.hook.get_run_state(RUN_ID)
+
+        assert run_state == RunState(LIFE_CYCLE_STATE, RESULT_STATE, STATE_MESSAGE)
+
+        ad_call_args = mock_get.call_args_list[0]
+        assert ad_call_args[1]['url'] == AZURE_METADATA_SERVICE_TOKEN_URL
+        assert ad_call_args[1]['params']['api-version'] > '2018-02-01'
+        assert ad_call_args[1]['headers']['Metadata'] == 'true'
