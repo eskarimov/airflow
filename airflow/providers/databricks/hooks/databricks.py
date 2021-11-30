@@ -688,3 +688,42 @@ class DatabricksAsyncHook(DatabricksHook):
         result_state = state.get('result_state', None)
         state_message = state['state_message']
         return RunState(life_cycle_state, result_state, state_message)
+
+    async def run_now(self, json: dict) -> int:
+        raise NotImplementedError('Please use run_now() in regular DatabricksHook class')
+
+    async def submit_run(self, json: dict) -> int:
+        raise NotImplementedError('Please use submit_run() in regular DatabricksHook class')
+
+    async def get_job_id(self, run_id: int) -> str:
+        raise NotImplementedError('Please use get_job_id() in regular DatabricksHook class')
+
+    async def get_run_state_str(self, run_id: int) -> str:
+        raise NotImplementedError('Please use get_run_state_str() in regular DatabricksHook class')
+
+    async def get_run_state_lifecycle(self, run_id: int) -> str:
+        raise NotImplementedError('Please use get_run_state_lifecycle() in regular DatabricksHook class')
+
+    async def get_run_state_result(self, run_id: int) -> str:
+        raise NotImplementedError('Please use get_run_state_result() in regular DatabricksHook class')
+
+    async def get_run_state_message(self, run_id: int) -> str:
+        raise NotImplementedError('Please use get_run_state_message() in regular DatabricksHook class')
+
+    async def cancel_run(self, run_id: int) -> None:
+        raise NotImplementedError('Please use cancel_run() in regular DatabricksHook class')
+
+    async def restart_cluster(self, json: dict) -> None:
+        raise NotImplementedError('Please use restart_cluster() in regular DatabricksHook class')
+
+    async def start_cluster(self, json: dict) -> None:
+        raise NotImplementedError('Please use start_cluster() in regular DatabricksHook class')
+
+    async def terminate_cluster(self, json: dict) -> None:
+        raise NotImplementedError('Please use terminate_cluster() in regular DatabricksHook class')
+
+    async def install(self, json: dict) -> None:
+        raise NotImplementedError('Please use install() in regular DatabricksHook class')
+
+    async def uninstall(self, json: dict) -> None:
+        raise NotImplementedError('Please use uninstall() in regular DatabricksHook class')
