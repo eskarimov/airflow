@@ -19,7 +19,7 @@
 import asyncio
 from typing import Any, Dict, Tuple
 
-from airflow.providers.databricks.hooks.databricks import DatabricksAsyncHook
+from airflow.providers.databricks.hooks.databricks import DatabricksHook
 from airflow.triggers.base import BaseTrigger, TriggerEvent
 
 
@@ -40,7 +40,7 @@ class DatabricksExecutionTrigger(BaseTrigger):
         self.run_id = run_id
         self.databricks_conn_id = databricks_conn_id
         self.polling_period_seconds = polling_period_seconds
-        self.hook = DatabricksAsyncHook(databricks_conn_id)
+        self.hook = DatabricksHook(databricks_conn_id)
 
     def serialize(self) -> Tuple[str, Dict[str, Any]]:
         return (
@@ -54,9 +54,9 @@ class DatabricksExecutionTrigger(BaseTrigger):
 
     async def run(self):
         async with self.hook:
-            run_page_url = await self.hook.get_run_page_url(self.run_id)
+            run_page_url = await self.hook.a_get_run_page_url(self.run_id)
             while True:
-                run_state = await self.hook.get_run_state(self.run_id)
+                run_state = await self.hook.a_get_run_state(self.run_id)
                 if run_state.is_terminal:
                     yield TriggerEvent(
                         {
