@@ -331,7 +331,7 @@ class DatabricksSubmitRunOperator(BaseOperator):
 class DatabricksSubmitRunDeferrableOperator(DatabricksSubmitRunOperator):
     """Deferrable version of ``DatabricksSubmitRunOperator``"""
 
-    def execute(self, context: Optional[dict]):
+    def execute(self, context):
         hook = self._get_hook()
 
         self.run_id = hook.submit_run(self.json)
