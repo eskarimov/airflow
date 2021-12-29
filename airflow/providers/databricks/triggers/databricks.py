@@ -15,12 +15,21 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
 import asyncio
+import logging
 from typing import Any, Dict, Tuple
 
 from airflow.providers.databricks.hooks.databricks import DatabricksHook
-from airflow.triggers.base import BaseTrigger, TriggerEvent
+
+try:
+    from airflow.triggers.base import BaseTrigger, TriggerEvent
+except ImportError:
+    logging.getLogger(__name__).warning(
+        'Deferrable Operators only work starting Airflow 2.2',
+        exc_info=True,
+    )
+    BaseTrigger = object  # type: ignore
+    TriggerEvent = None  # type: ignore
 
 
 class DatabricksExecutionTrigger(BaseTrigger):
